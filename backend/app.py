@@ -1,9 +1,11 @@
 from flask import Flask, request, send_file, render_template_string
+from flask_cors import CORS
 import edge_tts
 import asyncio
 import io
 
 app = Flask(__name__)
+CORS(app)  # 👈 This allows requests from any website
 
 HTML_PAGE = """
 <!DOCTYPE html>
@@ -11,43 +13,29 @@ HTML_PAGE = """
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Free TTS</title>
-    <style>
-        body { font-family: sans-serif; max-width: 600px; margin: 2rem auto; padding: 1rem; }
-        textarea { width: 100%; height: 100px; padding: 0.5rem; }
-        button { padding: 0.5rem 1.5rem; background: #16a34a; color: white; border: none; border-radius: 8px; font-weight: bold; cursor: pointer; margin-top: 1rem; }
-        #status { margin-top: 1rem; }
-    </style>
+    <title>TTS</title>
 </head>
 <body>
-    <h2>🗣️ TTS (MP3 download)</h2>
-    <textarea id="text">Hello, this is a test.</textarea>
-    <br>
-    <button onclick="download()">⬇️ Download MP3</button>
-    <div id="status"></div>
-
+    <h2>Backend is running</h2>
+    <form id="ttsForm">
+        <textarea id="text" rows="4">Hello</textarea>
+        <button type="submit">Download MP3</button>
+    </form>
     <script>
-        async function download() {
+        document.getElementById('ttsForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
             const text = document.getElementById('text').value;
-            if (!text) { document.getElementById('status').textContent = 'Please enter text.'; return; }
-            document.getElementById('status').textContent = 'Generating... (takes 5-10 seconds)';
-            try {
-                const resp = await fetch('/download', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ text })
-                });
-                if (!resp.ok) throw new Error('Server error');
-                const blob = await resp.blob();
-                const a = document.createElement('a');
-                a.href = URL.createObjectURL(blob);
-                a.download = 'tts.mp3';
-                a.click();
-                document.getElementById('status').textContent = '✅ Downloaded!';
-            } catch (err) {
-                document.getElementById('status').textContent = '❌ ' + err.message;
-            }
-        }
+            const resp = await fetch('/download', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+            const blob = await resp.blob();
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'tts.mp3';
+            a.click();
+        });
     </script>
 </body>
 </html>
@@ -57,11 +45,14 @@ HTML_PAGE = """
 def index():
     return render_template_string(HTML_PAGE)
 
-@app.route('/download', methods=['POST'])
+@app.route('/download', methods=['POST', 'OPTIONS'])
 def download():
+    if request.method == 'OPTIONS':
+        return '', 200
+
     data = request.json
     text = data.get('text', '')
-    voice = "en-US-AriaNeural"  # You can add a voice selector later
+    voice = data.get('voice', 'en-US-AriaNeural')
 
     async def generate():
         communicate = edge_tts.Communicate(text, voice)
@@ -80,4 +71,4 @@ def download():
     )
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=10000)  # Render uses port 10000
+    app.run(host='0.0.0.0', port=10000)
