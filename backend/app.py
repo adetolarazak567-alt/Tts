@@ -1,80 +1,20 @@
 from flask import Flask, request, send_file, render_template_string
 from flask_cors import CORS
-import edge_tts
-import asyncio
+import subprocess
+import tempfile
+import os
 import io
-import re
 
 app = Flask(__name__)
 CORS(app)
 
-HTML_PAGE = """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TTS</title>
-</head>
-<body>
-    <h2>Backend is running</h2>
-    <form id="ttsForm">
-        <textarea id="text" rows="4">Hello</textarea>
-        <button type="submit">Download MP3</button>
-    </form>
-    <script>
-        document.getElementById('ttsForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const text = document.getElementById('text').value;
-            const resp = await fetch('/download', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text })
-            });
-            const blob = await resp.blob();
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = 'tts.mp3';
-            a.click();
-        });
-    </script>
-</body>
-</html>
-"""
+HTML_PAGE = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>TTS</title></head>
+<body><h2>Backend is running</h2></body></html>"""
 
-def escape_ssml(text):
-    """Escape special XML characters for SSML safety."""
-    text = text.replace('&', '&amp;')
-    text = text.replace('<', '&lt;')
-    text = text.replace('>', '&gt;')
-    text = text.replace('"', '&quot;')
-    text = text.replace("'", '&apos;')
+def escape_xml(text):
+    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    text = text.replace('"', '&quot;').replace("'", '&apos;')
     return text
-
-def build_ssml(text, speed, pitch):
-    """
-    Build SSML with prosody controls.
-    speed: float (0.5 to 2.0)
-    pitch: int (-20 to +20)
-    """
-    # Escape text for XML safety
-    safe_text = escape_ssml(text)
-    
-    # Convert speed to percentage string for SSML rate
-    # Edge-TTS accepts: "slow", "medium", "fast", or "50%", "100%", "150%"
-    rate_percent = int(speed * 100)
-    rate_str = f"{rate_percent}%"
-    
-    # Convert pitch to SSML format
-    # Edge-TTS pitch: "x-low", "low", "default", "high", "x-high", or "-20%", "+20%"
-    if pitch == 0:
-        pitch_str = "default"
-    else:
-        pitch_str = f"{pitch:+d}%"
-    
-    # Build SSML
-    ssml = f'<speak><prosody pitch="{pitch_str}" rate="{rate_str}">{safe_text}</prosody></speak>'
-    return ssml
 
 @app.route('/')
 def index():
@@ -91,35 +31,61 @@ def download():
     speed = float(data.get('speed', 1.0))
     pitch = int(data.get('pitch', 0))
 
-    # Validate inputs
     if not text or not text.strip():
         return {'error': 'Text is required'}, 400
     
-    # Clamp values for safety
     speed = max(0.5, min(2.0, speed))
     pitch = max(-20, min(20, pitch))
 
-    # Build SSML with pitch and speed
-    ssml_text = build_ssml(text, speed, pitch)
-    print(f"[TTS] Voice: {voice} | Speed: {speed}x | Pitch: {pitch} | SSML: {ssml_text[:100]}...")
-
-    async def generate():
-        communicate = edge_tts.Communicate(ssml_text, voice)
-        audio = b''
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                audio += chunk["data"]
-        return audio
-
+    safe_text = escape_xml(text)
+    rate_pct = int(speed * 100)
+    pitch_str = "default" if pitch == 0 else f"{pitch:+d}Hz"
+    
+    # Build SSML
+    ssml = f'<speak><prosody pitch="{pitch_str}" rate="{rate_pct}%">{safe_text}</prosody></speak>'
+    
+    # Write SSML to temp file
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.ssml', delete=False) as f:
+        f.write(ssml)
+        ssml_path = f.name
+    
+    # Output mp3 temp file
+    output_path = ssml_path.replace('.ssml', '.mp3')
+    
     try:
-        audio = asyncio.run(generate())
+        # Use edge-tts CLI with --file flag for SSML input
+        cmd = [
+            'edge-tts',
+            '--file', ssml_path,
+            '--voice', voice,
+            '--write-media', output_path
+        ]
+        
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        
+        if result.returncode != 0:
+            print(f"[TTS CLI ERROR] {result.stderr}")
+            return {'error': result.stderr}, 500
+        
+        with open(output_path, 'rb') as f:
+            audio = f.read()
+        
+        # Cleanup
+        os.unlink(ssml_path)
+        os.unlink(output_path)
+        
         return send_file(
             io.BytesIO(audio),
             mimetype='audio/mpeg',
             as_attachment=True,
             download_name='tts.mp3'
         )
+        
     except Exception as e:
+        # Cleanup on error
+        for p in [ssml_path, output_path]:
+            if os.path.exists(p):
+                os.unlink(p)
         print(f"[TTS ERROR] {e}")
         return {'error': str(e)}, 500
 
