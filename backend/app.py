@@ -5,10 +5,41 @@ import asyncio
 import io
 
 app = Flask(__name__)
-CORS(app)
+CORS(app)  # 👈 This allows requests from any website
 
-HTML_PAGE = """<!DOCTYPE html><html><head><meta charset="UTF-8"><title>TTS</title></head>
-<body><h2>Backend is running</h2></body></html>"""
+HTML_PAGE = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>TTS</title>
+</head>
+<body>
+    <h2>Backend is running</h2>
+    <form id="ttsForm">
+        <textarea id="text" rows="4">Hello</textarea>
+        <button type="submit">Download MP3</button>
+    </form>
+    <script>
+        document.getElementById('ttsForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const text = document.getElementById('text').value;
+            const resp = await fetch('/download', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text })
+            });
+            const blob = await resp.blob();
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'tts.mp3';
+            a.click();
+        });
+    </script>
+</body>
+</html>
+"""
 
 @app.route('/')
 def index():
@@ -19,44 +50,25 @@ def download():
     if request.method == 'OPTIONS':
         return '', 200
 
-    data = request.json or {}
+    data = request.json
     text = data.get('text', '')
     voice = data.get('voice', 'en-US-AriaNeural')
-    speed = float(data.get('speed', 1.0))
-
-    if not text or not text.strip():
-        return {'error': 'Text is required'}, 400
-    
-    # Clamp speed
-    speed = max(0.5, min(2.0, speed))
-
-    # Edge-TTS uses rate as percentage string
-    rate_pct = int(speed * 100)
-    
-    # Build simple SSML with ONLY rate (speed) - pitch is NOT supported by Edge-TTS
-    ssml = f'<speak><prosody rate="{rate_pct}%">{text}</prosody></speak>'
-    
-    print(f"[TTS] Voice: {voice} | Speed: {speed}x ({rate_pct}%)")
 
     async def generate():
-        communicate = edge_tts.Communicate(ssml, voice)
+        communicate = edge_tts.Communicate(text, voice)
         audio = b''
         async for chunk in communicate.stream():
             if chunk["type"] == "audio":
                 audio += chunk["data"]
         return audio
 
-    try:
-        audio = asyncio.run(generate())
-        return send_file(
-            io.BytesIO(audio),
-            mimetype='audio/mpeg',
-            as_attachment=True,
-            download_name='tts.mp3'
-        )
-    except Exception as e:
-        print(f"[TTS ERROR] {e}")
-        return {'error': str(e)}, 500
+    audio = asyncio.run(generate())
+    return send_file(
+        io.BytesIO(audio),
+        mimetype='audio/mpeg',
+        as_attachment=True,
+        download_name='tts.mp3'
+    )
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=10000)
