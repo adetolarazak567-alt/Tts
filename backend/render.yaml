@@ -3,4 +3,9 @@ services:
     name: tts-backend
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: gunicorn app:app
+    startCommand: gunicorn app:app --workers 1 --threads 4 --timeout 120
+    envVars:
+      - key: ALLOWED_ORIGINS
+        value: "*"   # 🔒 replace with your real frontend URL(s), comma-separated
+      - key: PYTHON_VERSION
+        value: "3.11.9"
